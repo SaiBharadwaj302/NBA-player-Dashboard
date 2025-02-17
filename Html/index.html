@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>NBA Dashboard</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <h1>NBA Players Dashboard</h1>
+
+  <!-- Conference Selection Buttons -->
+  <div class="conference-buttons">
+    <button onclick="setConference('Western')">Western</button>
+    <button onclick="setConference('Eastern')">Eastern</button>
+  </div>
+
+  <div class="dashboard">
+    <div class="chart-container">
+      <div class="chart-title">PPG Rebounds Assists and Steals Coordinates of top 10 players</div>
+      <div id="parallel-coords"></div>
+    </div>
+    <div class="chart-container">
+      <div class="chart-title">Assist Rebounds and PPG comparison of top 10 Players </div>
+      <div id="grouped-bar"></div>
+    </div>
+    <div class="chart-container">
+      <!-- Give this title an id to dynamically update it -->
+      <div class="chart-title" id="radar-title">Performance chart of  </div>
+      <div id="radar-chart"></div>
+    </div>
+    <div class="chart-container">
+      <div class="chart-title">PPG Comparison of Top 10 players </div>
+      <div id="force-bubble"></div>
+    </div>
+  </div>
+
+  <script>
+    // Removes duplicates by keeping only the row with the highest PPG per player
+    function deduplicatePlayersByPPG(data) {
+      const map = {};
+      data.forEach(d => {
+        if(!map[d.Player]) {
+          map[d.Player] = d;
+        } else {
+          if(+d.PPG > +map[d.Player].PPG) {
+            map[d.Player] = d;
+          }
+        }
+      });
+      return Object.values(map);
+    }
+
+    let allData = [];
+    let selectedConference = null;
+    let selectedPlayer = null;
+
+    d3.json("nba_processed1.json").then(data => {
+      allData = deduplicatePlayersByPPG(data);
+      filterDataAndDraw();
+    }).catch(err => {
+      console.error("Error loading data:", err);
+      alert("Failed to load data! Check console for details.");
+    });
+
+    function setConference(conf) {
+      selectedConference = conf;
+      filterDataAndDraw();
+    }
+
+    function filterDataAndDraw() {
+      let filtered = selectedConference
+        ? allData.filter(d => d.Conference === selectedConference)
+        : allData;
+
+      filtered = filtered
+        .sort((a, b) => (b.PPG || 0) - (a.PPG || 0))
+        .slice(0, 10);
+
+      if(!filtered.some(d => d.Player === selectedPlayer) && filtered.length > 0) {
+        selectedPlayer = filtered[0].Player;
+      }
+      drawCharts(filtered);
+    }
+
+    function drawCharts(subset) {
+      drawParallelCoords(subset);
+      drawGroupedBar(subset);
+      drawRadarChart(selectedPlayer, subset);
+      drawForceDirectedBubble(subset);
+    }
+
+    function selectPlayer(newPlayer) {
+      selectedPlayer = newPlayer;
+      highlightParallelCoords(selectedPlayer);
+      highlightGroupedBar(selectedPlayer);
+      drawRadarChart(selectedPlayer, null);
+      highlightForceDirectedBubble(selectedPlayer);
+    }
+
+    // --------------------------------
+    // 1) Parallel Coordinates
+    // --------------------------------
+    function drawParallelCoords(data) {
+  const margin = {top: 20, right: 20, bottom: 20, left: 20},
+        width = 600 - margin.left - margin.right,
+        height = 320 - margin.top - margin.bottom;
+
+  const metrics = ["PPG", "Rebounds", "AST","STL"];
+  const svg = d3.select("#parallel-coords")
+    .html("")
+    .append("svg")
+    .attr("width", width + margin.left + margin.right)
+    .attr("height", height + margin.top + margin.bottom)
+    .append("g")
+    .attr("transform", `translate(${margin.left},${margin.top})`);
+
+  // Tooltip for Parallel Coordinates
+  const tooltipParallel = d3.select("body") // Append to body
+    .append("div")
+    .attr("class", "tooltip");
+
+  const yScales = {};
+  metrics.forEach(m => {
+    const maxVal = d3.max(data, d => +d[m] || 0);
+    yScales[m] = d3.scaleLinear()
+      .domain([0, maxVal || 1])
+      .range([height, 0])
+      .nice();
+  });
+
+  const xScale = d3.scalePoint()
+    .domain(metrics)
+    .range([0, width])
+    .padding(0.5);
+
+  svg.selectAll(".parallel-axis")
+    .data(metrics)
+    .enter().append("g")
+    .attr("class", "parallel-axis")
+    .attr("transform", d => `translate(${xScale(d)},0)`)
+    .each(function(d) {
+      d3.select(this).call(d3.axisLeft(yScales[d]).ticks(5));
+    })
+    .append("text")
+    .attr("y", -10)
+    .attr("text-anchor", "middle")
+    .attr("fill", "#333")
+    .attr("font-weight", "bold")
+    .text(d => d);
+
+  const line = d3.line()
+    .x((d, i) => xScale(metrics[i]))
+    .y(([metric, val]) => yScales[metric](val));
+
+  svg.selectAll(".p-line")
+    .data(data)
+    .enter().append("path")
+    .attr("class", "p-line")
+    .attr("d", d => {
+      const coords = metrics.map(m => [m, +d[m] || 0]);
+      return line(coords);
+    })
+    .attr("fill", "none")
+    .attr("stroke", d => (d.Player === selectedPlayer) ? "#d35400" : "#2980b9")
+    .attr("opacity", 0.7)
+    .style("cursor", "pointer")
+    .on("mouseover", (evt, d) => {
+      tooltipParallel
+        .style("display", "block")
+        .style("left", (evt.pageX + 10) + "px")
+        .style("top", (evt.pageY + 10) + "px")
+        .html(`
+          <strong>${d.Player}</strong><br/>
+          PPG: ${d.PPG || 0}<br/>
+          Rebounds: ${d.Rebounds || 0}<br/>
+          AST: ${d.AST || 0}<br/>
+          STL : ${d["STL"] || 0}
+        `)
+        .classed("show", true);
+    })
+    .on("mouseout", () => {
+      tooltipParallel.style("display", "none").classed("show", false);
+    })
+    .on("click", (evt, d) => selectPlayer(d.Player));
+}
+
+
+    function highlightParallelCoords(playerName) {
+      d3.selectAll(".p-line")
+        .transition()
+        .duration(500)
+        .attr("stroke", d => (d.Player === playerName) ? "#d35400" : "#2980b9");
+    }
+
+    // --------------------------------
+    // 2) Grouped Bar Chart
+    // --------------------------------
+    function drawGroupedBar(data) {
+  const margin = {top: 20, right: 20, bottom: 100, left: 50},
+        width = 560 - margin.left - margin.right,
+        height = 320 - margin.top - margin.bottom;
+
+  const metrics = ["PPG", "Rebounds", "AST"];
+  const svg = d3.select("#grouped-bar")
+    .html("")
+    .append("svg")
+    .attr("width", width + margin.left + margin.right )
+    .attr("height", height + margin.top + margin.bottom)
+    .append("g")
+    .attr("transform", `translate(${margin.left},${margin.top})`);
+
+  // Create a tooltip for the bar chart
+  const tooltipBar = d3.select("body") // Append to body
+    .append("div")
+    .attr("class", "tooltip");
+
+  const x0 = d3.scaleBand()
+    .domain(data.map(d => d.Player))
+    .range([0, width])
+    .paddingInner(0.1);
+
+  const x1 = d3.scaleBand()
+    .domain(metrics)
+    .range([0, x0.bandwidth()])
+    .padding(0.05);
+
+  const yMax = d3.max(data, d => Math.max(...metrics.map(m => +d[m] || 0))) || 0;
+  const y = d3.scaleLinear()
+    .domain([0, yMax])
+    .range([height, 0])
+    .nice();
+
+  svg.append("g")
+    .attr("transform", `translate(0, ${height})`)
+    .call(d3.axisBottom(x0))
+    .selectAll("text")
+    .attr("text-anchor", "end")
+    .attr("transform", "rotate(-45)")
+    .attr("dx", "-.8em")
+    .attr("font-size", "12px")
+    .attr("font-weight", "bold")
+    .attr("dy", ".15em");
+
+  svg.append("g")
+    .call(d3.axisLeft(y));
+
+  const groups = svg.selectAll(".player-group")
+    .data(data)
+    .enter().append("g")
+    .attr("class", "player-group")
+    .attr("transform", d => `translate(${x0(d.Player)},0)`);
+
+  groups.selectAll("rect")
+    .data(d => metrics.map(m => ({ key: m, value: d[m] })))
+    .enter().append("rect")
+    .attr("x", d => x1(d.key))
+    .attr("y", d => y(d.value || 0))
+    .attr("width", x1.bandwidth())
+    .attr("height", d => height - y(d.value || 0))
+    .attr("fill", d => d.value > 0 ? "#2ecc71" : "#bdc3c7")
+    .style("cursor", "pointer")
+    .on("mouseover", (evt, rectData) => {
+      const parentData = d3.select(evt.target.parentNode).datum();
+      tooltipBar
+        .style("display", "block")
+        .style("left", (evt.pageX + 10) + "px")
+        .style("top", (evt.pageY + 10) + "px")
+        .html(`
+          <strong>${parentData.Player}</strong><br/>
+          ${rectData.key}: ${rectData.value || 0}
+        `)
+        .classed("show", true);
+    })
+    .on("mouseout", () => {
+      tooltipBar.style("display", "none").classed("show", false);
+    })
+    .on("click", function(evt, metricObj) {
+      const parentData = d3.select(this.parentNode).datum();
+      selectPlayer(parentData.Player);
+      highlightParallelCoords(parentData.Player);
+    });
+
+  highlightGroupedBar(selectedPlayer);
+}
+    function highlightGroupedBar(playerName) {
+      d3.selectAll(".player-group rect")
+        .transition()
+        .duration(500)
+        .attr("stroke", function() {
+          const dataNode = d3.select(this.parentNode).datum();
+          return (dataNode.Player === playerName) ? "#d35400" : "none";
+        })
+        .attr("stroke-width", 2);
+    }
+
+    // --------------------------------
+    // 3) Radar (Spider) Chart
+    // --------------------------------
+    function drawRadarChart(playerName, dataSubset) {
+      // If no player specified, reset title and stop
+      if (!playerName) {
+        d3.select("#radar-title").text("Radar (Spider) Chart");
+        return;
+      } else {
+        // Update the title to reflect the selected player
+        d3.select("#radar-title").text(`Performance Chart of ${playerName}`);
+      }
+
+      let dataToSearch = dataSubset || [];
+      if(dataToSearch.length === 0) {
+        dataToSearch = selectedConference
+          ? allData.filter(d => d.Conference === selectedConference)
+          : allData;
+        dataToSearch = dataToSearch
+          .sort((a, b) => (b.PPG || 0) - (a.PPG || 0))
+          .slice(0, 10);
+      }
+
+      const previousSvg = d3.select("#radar-chart svg");
+      if (previousSvg) {
+        previousSvg.transition()
+          .duration(1000)
+          .style("opacity", 0)
+          .remove();
+      }
+
+      d3.select("#radar-chart").html("");
+
+      const width = 600,
+            height = 400,
+            margin = 60;
+      const playerObj = dataToSearch.find(d => d.Player === playerName);
+      if(!playerObj) return;
+
+      const metrics = ["PPG", "Rebounds", "AST", "BLK", "STL"];
+      const dataset = metrics.map(m => +playerObj[m] || 0);
+
+      // Normalize each metric to 0-1
+      const maxValues = {};
+      metrics.forEach(m => {
+        maxValues[m] = d3.max(dataToSearch, d => +d[m] || 0);
+      });
+      const normalizedDataset = dataset.map((value, i) => value / (maxValues[metrics[i]] || 1));
+
+      const maxVal = 1;
+      const radius = Math.min(width, height) / 2 - margin;
+      const angleSlice = (2 * Math.PI) / metrics.length;
+
+      const svg = d3.select("#radar-chart")
+        .append("svg")
+        .attr("width", width)
+        .attr("height", height)
+        .append("g")
+        .attr("transform", `translate(${width/2}, ${height/2})`)
+        .style("opacity", 0);
+        const levels = 4; // number of polygon layers
+    for (let level = 1; level <= levels; level++) {
+      const fraction = level / levels;
+      let polygonPoints = "";
+      for (let i = 0; i < metrics.length; i++) {
+        const angle = angleSlice * i - Math.PI / 2;
+        // Radial distance for this level
+        const xPos = fraction * radius * Math.cos(angle);
+        const yPos = fraction * radius * Math.sin(angle);
+        polygonPoints += `${xPos},${yPos} `;
+      }
+      svg.append("polygon")
+        .attr("points", polygonPoints.trim())
+        .style("fill", "none")
+        .style("stroke", "#999")
+        .style("stroke-dasharray", "2,2");
+    }
+
+
+      // Axis lines & labels
+      for(let i = 0; i < metrics.length; i++){
+        const angle = angleSlice * i - Math.PI/2;
+        const xPos = radius * Math.cos(angle);
+        const yPos = radius * Math.sin(angle);
+
+        // Axis line
+        svg.append("line")
+          .attr("x1", 0)
+          .attr("y1", 0)
+          .attr("x2", xPos)
+          .attr("y2", yPos)
+          .attr("stroke", "#999")
+          .attr("stroke-width", 1);
+
+        // Axis label
+        svg.append("text")
+          .attr("x", (radius + 15) * Math.cos(angle))
+          .attr("y", (radius + 15) * Math.sin(angle))
+          .attr("text-anchor", "middle")
+          .attr("dy", "0.35em")
+          .attr("font-size", "14px")
+          .attr("font-weight", "bold")
+          .text(metrics[i]);
+      }
+
+      // Radar line generator
+      const radarLine = d3.lineRadial()
+        .radius((d,i) => (d / maxVal) * radius)
+        .angle((d,i) => i * angleSlice);
+
+      // Add the initial and closing point
+      normalizedDataset.push(normalizedDataset[0]);
+
+      // Draw the radar shape
+      const path = svg.append("path")
+        .datum(normalizedDataset)
+        .attr("class", "radar-line")
+        .attr("d", radarLine)
+        .attr("fill", "rgba(0, 255, 255, 0.2)")
+        .attr("stroke", "#00ffff")
+        .attr("stroke-width", 2);
+
+      // Gradual transition in
+      svg.transition()
+        .duration(1000)
+        .style("opacity", 1);
+
+      path.transition()
+        .duration(2000)
+        .ease(d3.easeCubicInOut)
+        .attrTween("d", function(d) {
+          const previous = d3.select(this).attr("d");
+          const current = radarLine(d);
+          const interpolate = d3.interpolateString(previous, current);
+          return function(t) {
+            return interpolate(t);
+          };
+        });
+
+      normalizedDataset.pop(); // Remove the closing point
+    }
+
+    // --------------------------------
+    // 4) Force-Directed Bubble Chart
+    // --------------------------------
+    function drawForceDirectedBubble(data) {
+  const width = 560, height = 320;
+  d3.select("#force-bubble").html("");
+
+  const svg = d3.select("#force-bubble")
+    .append("svg")
+    .attr("width", width)
+    .attr("height", height);
+
+  const colorScale = d3.scaleOrdinal(d3.schemeSet2);
+  const maxPPG = d3.max(data, d => +d.PPG || 1);
+
+  // Use d3.scalePow to exaggerate smaller variances.
+  const radiusScale = d3.scalePow()
+    .exponent(1.2) // Increase exponent to amplify smaller differences
+    .domain([0, maxPPG])
+    .range([5, 35]);
+
+  const simulation = d3.forceSimulation(data)
+    .force("charge", d3.forceManyBody().strength(-50))
+    .force("center", d3.forceCenter(width / 2, height / 2))
+    .force("collision", d3.forceCollide().radius(d => radiusScale(d.PPG) + 2))
+    .force("x", d3.forceX(width / 2).strength(0.05))
+    .force("y", d3.forceY(height / 2).strength(0.05))
+    .on("tick", ticked);
+
+  const node = svg.selectAll(".node")
+    .data(data)
+    .enter().append("circle")
+    .attr("class", "node")
+    .attr("r", d => radiusScale(d.PPG || 0))
+    .attr("fill", d => (d.Player === selectedPlayer) ? "#f1c40f" : colorScale(d.Role || "Unknown"))
+    .attr("stroke", "#333")
+    .attr("stroke-width", 1)
+    .attr("opacity", 0.9)
+    .style("cursor", "pointer")
+    .on("click", (evt, d) => selectPlayer(d.Player));
+
+  // Tooltip for bubble chart
+  const tooltip = d3.select("body") // Append to body
+    .append("div")
+    .attr("class", "tooltip");
+
+  node.on("mouseover", (event, d) => {
+    tooltip
+      .style("display", "block")
+      .style("left", (event.pageX + 10) + "px")
+      .style("top", (event.pageY + 10) + "px")
+      .html(`
+        <strong>${d.Player}</strong><br/>
+        Conference: ${d.Conference}<br/>
+        Role: ${d.Pos}<br/>
+        PPG: ${d.PPG}
+      `)
+      .classed("show", true);
+  })
+  .on("mouseout", () => {
+    tooltip.style("display", "none").classed("show", false);
+  });
+
+  function ticked() {
+    node
+      .attr("cx", d => Math.max(radiusScale(d.PPG), Math.min(width - radiusScale(d.PPG), d.x)))
+      .attr("cy", d => Math.max(radiusScale(d.PPG), Math.min(height - radiusScale(d.PPG), d.y)));
+  }
+  highlightForceDirectedBubble(selectedPlayer);
+}
+
+    function highlightForceDirectedBubble(playerName) {
+      d3.selectAll(".node")
+        .transition()
+        .duration(600)
+        .attr("fill", function(d) {
+          if(d.Player === playerName) return "#f1c40f";
+          const color = d3.scaleOrdinal(d3.schemeSet2);
+          return color(d.Role || "Unknown");
+        });
+    }
+  </script>
+</body>
+</html>
